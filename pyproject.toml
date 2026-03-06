@@ -9,6 +9,7 @@ dependencies = [
     "faster-whisper",
     "httpx",
     "jinja2",
+    "mlx-whisper; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "numpy",
     "onnxruntime",
     "openai-whisper",
