@@ -102,7 +102,7 @@ def transcribe_audio(mp3_path: str, model_type: str = "large-v3"):
     return unified_segments
 
 
-def main(target_dir_str: str, model_type: str):
+def main(target_dir_str: str, model_type: str, limit: int = 0):
     target_dir = Path(target_dir_str).resolve()
     if not target_dir.is_dir():
         print(f"Error: '{target_dir}' is not a valid directory.")
@@ -111,7 +111,12 @@ def main(target_dir_str: str, model_type: str):
     print(f"Target directory: {target_dir}")
 
     # Find all mp3 files in the target directory
-    mp3_files = sorted(target_dir.glob("*.mp3"), reverse=True)
+    # mp3_files = sorted(target_dir.glob("*.mp3"), reverse=True)
+    mp3_files = sorted(target_dir.glob("*.mp3"), reverse=False)
+
+    if limit > 0:
+        mp3_files = mp3_files[:limit]
+        print(f"Limiting to {limit} file(s).")
 
     if not mp3_files:
         print("No MP3 files found in the target directory.")
@@ -196,7 +201,13 @@ if __name__ == "__main__":
         default="large-v3",
         help="whisper model type (default: large-v3)",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Limit the number of files to process (0 = no limit)",
+    )
     args = parser.parse_args()
 
     # args.target_dir = "Gooaye"
-    main(args.target_dir, args.model)
+    main(args.target_dir, args.model, args.limit)
