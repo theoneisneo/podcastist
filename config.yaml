@@ -1,0 +1,25 @@
+# 翻譯服務設定
+# 可選值: "local", "openai", "claude", "gemini"
+translation_service: "local"
+
+# 批次翻譯數量 (影響效率與穩定性)
+batch_size: 10
+
+# API 設定
+providers:
+  local:
+    api_base: "http://localhost:12345/v1"
+    api_key: "lm-studio"
+    model: "default"
+  
+  openai:
+    api_key: "sk-..."
+    model: "gpt-4o"
+    
+  claude:
+    api_key: "sk-ant-..."
+    model: "claude-3-5-sonnet-latest"
+    
+  gemini:
+    api_key: "AIza..."
+    model: "gemini-2.5-pro"

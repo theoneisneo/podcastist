@@ -1,7 +1,31 @@
 import argparse
 import platform
 import time
+import uuid
+import yaml
+import gc
+import sys
 from pathlib import Path
+from typing import List, Dict, Optional
+
+# 第三方庫統一放在最上方
+try:
+    import torch
+except ImportError:
+    torch = None
+
+try:
+    import stable_whisper
+except ImportError:
+    stable_whisper = None
+
+try:
+    import mlx_whisper
+except ImportError:
+    mlx_whisper = None
+
+# 引入自定義模組
+from translate_srt import load_config, translate_segments, save_translated_srt
 
 
 def format_timestamp(seconds: float):
@@ -12,202 +36,169 @@ def format_timestamp(seconds: float):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{msecs:03d}"
 
 
-def transcribe_audio(mp3_path: str, model_type: str = "large-v3"):
-    # 判斷是否為 Mac (Apple Silicon)
+def load_whisper_model(model_type: str):
+    """根據平台與硬體載入一次模型"""
     is_mac = platform.system() == "Darwin" and platform.machine() == "arm64"
-
-    # Check for CUDA without importing full torch if we know we are on a Mac
-    has_cuda = False
-    if not is_mac:
-        try:
-            import torch
-
-            has_cuda = torch.cuda.is_available()
-        except ImportError:
-            pass
+    has_cuda = torch.cuda.is_available() if torch else False
 
     if has_cuda:
-        # --- RTX 3090 (Windows/Linux) 邏輯 ---
-        print(f"Loading faster-whisper '{model_type}' on CUDA (float16)...")
-        from faster_whisper import WhisperModel
-
-        model = WhisperModel(model_type, device="cuda", compute_type="float16")
-        segments_generator, info = model.transcribe(
-            str(mp3_path),
-            language="zh",
-            initial_prompt="以下是正體中文的逐字稿，包含標點符號。",
-            condition_on_previous_text=False,
-        )
-        print(
-            f"Detected language '{info.language}' with probability {info.language_probability:.2f}"
-        )
-
-        # 將 Generator 轉換為統一格式的 List[Dict]
-        unified_segments = []
-        for s in segments_generator:
-            unified_segments.append(
-                {"start": s.start, "end": s.end, "text": s.text.strip()}
-            )
-
+        print(f"Loading stable-ts (faster-whisper) '{model_type}' on CUDA...")
+        return stable_whisper.load_faster_whisper(model_type, device="cuda", compute_type="float16")
     elif is_mac:
-        # --- MacBook M4 邏輯 ---
-        print(f"Loading MLX-whisper '{model_type}' on Apple Silicon (float16)...")
-        import mlx_whisper
+        print(f"Using MLX-whisper '{model_type}' (Just-in-time loading)")
+        return "mlx" # MLX 庫的設計通常是調用時加載
+    else:
+        print(f"Loading stable-ts '{model_type}' on CPU...")
+        return stable_whisper.load_faster_whisper(model_type, device="cpu", compute_type="int8")
 
-        # MLX 模型通常需要從 Hugging Face 指定 mlx-community 的版本
-        mlx_repo = f"mlx-community/whisper-{model_type}-mlx"
 
-        print(f"Transcribing '{mp3_path}' with {mlx_repo}...")
+def transcribe_audio(model, mp3_path: Path, language: str, initial_prompt: Optional[str]):
+    """使用傳入的模型實體進行轉錄"""
+    if model == "mlx":
+        mlx_repo = f"mlx-community/whisper-{args.model}-mlx"
         result = mlx_whisper.transcribe(
             str(mp3_path),
             path_or_hf_repo=mlx_repo,
-            language="zh",
-            initial_prompt="以下是正體中文的逐字稿，包含標點符號。",
+            language=language,
+            initial_prompt=initial_prompt,
             condition_on_previous_text=False,
         )
-
-        # result["segments"] 本身就是 List[Dict] 的格式，包含 start, end, text
-        unified_segments = []
-        for s in result["segments"]:
-            unified_segments.append(
-                {
-                    "start": float(s["start"]),
-                    "end": float(s["end"]),
-                    "text": s["text"].strip(),
-                }
-            )
-
+        segments = result["segments"]
     else:
-        # --- CPU 降級備用邏輯 ---
-        print("No GPU/MPS detected. Falling back to CPU with int8...")
-        from faster_whisper import WhisperModel
-
-        model = WhisperModel(model_type, device="cpu", compute_type="int8")
-        segments_generator, info = model.transcribe(
+        result = model.transcribe_stable(
             str(mp3_path),
-            language="zh",
-            initial_prompt="以下是正體中文的逐字稿，包含標點符號。",
+            language=language,
+            initial_prompt=initial_prompt,
             condition_on_previous_text=False,
+            vad=True,
         )
-        print(
-            f"Detected language '{info.language}' with probability {info.language_probability:.2f}"
-        )
+        segments = result.segments
 
-        unified_segments = []
-        for s in segments_generator:
-            unified_segments.append(
-                {"start": s.start, "end": s.end, "text": s.text.strip()}
-            )
-
+    unified_segments = []
+    for s in segments:
+        start = float(s.get('start', 0) if isinstance(s, dict) else s.start)
+        end = float(s.get('end', 0) if isinstance(s, dict) else s.end)
+        text = s.get('text', "").strip() if isinstance(s, dict) else s.text.strip()
+        
+        timestamp = f"[{format_timestamp(start)} -> {format_timestamp(end)}]"
+        print(f"{timestamp} {text}")
+        unified_segments.append({"start": start, "end": end, "text": text})
+    
     return unified_segments
 
 
-def main(target_dir_str: str, model_type: str, limit: int = 0):
+def save_to_files(segments: List[Dict], output_path_base: Path, converter=None):
+    txt_path = output_path_base.with_suffix(".txt")
+    srt_path = output_path_base.with_suffix(".srt")
+
+    with (
+        open(txt_path, "w", encoding="utf-8") as f_txt,
+        open(srt_path, "w", encoding="utf-8") as f_srt,
+    ):
+        for i, segment in enumerate(segments, start=1):
+            text = segment["text"]
+            if converter:
+                text = converter.convert(text)
+
+            f_txt.write(text + "\n")
+            f_srt.write(f"{i}\n")
+            f_srt.write(f"{format_timestamp(segment['start'])} --> {format_timestamp(segment['end'])}\n")
+            f_srt.write(f"{text}\n\n")
+
+
+def main(target_dir_str: str, model_type: str, src_lang: str, tr_lang: str, service: str, limit: int = 0):
+    config = load_config()
+    service = service or config.get("translation_service", "local")
     target_dir = Path(target_dir_str).resolve()
-    if not target_dir.is_dir():
-        print(f"Error: '{target_dir}' is not a valid directory.")
-        return
-
-    print(f"Target directory: {target_dir}")
-
-    # Find all mp3 files in the target directory
-    # mp3_files = sorted(target_dir.glob("*.mp3"), reverse=True)
-    mp3_files = sorted(target_dir.glob("*.mp3"), reverse=False)
+    
+    mp3_files = []
+    for ext in ("*.mp3", "*.mp4", "*.m4a", "*.wav"):
+        mp3_files.extend(target_dir.glob(ext))
+    
+    # 遠端修改為依據檔案時間正序排序（oldest-first）
+    mp3_files = sorted(mp3_files, reverse=False)
 
     if limit > 0:
         mp3_files = mp3_files[:limit]
         print(f"Limiting to {limit} file(s).")
 
     if not mp3_files:
-        print("No MP3 files found in the target directory.")
+        print("No media files found.")
         return
 
-    # Initialize OpenCC for Simplified to Traditional conversion
-    try:
-        import opencc
+    # 1. 載入一次 Whisper 模型
+    model = load_whisper_model(model_type)
+    
+    # 用於存儲待翻譯的任務
+    transcription_results = []
 
-        converter = opencc.OpenCC(
-            "s2twp"
-        )  # Simplified to Traditional (Taiwan standard), .json is auto-appended
-    except ImportError:
-        print("Warning: 'opencc' library not found. Falling back to original text.")
-        print("To install: uv add opencc-python-reimplemented")
-        converter = None
-
+    # 2. 批次辨識
     for mp3_path in mp3_files:
-        # Each episode gets its own folder with the same name as the mp3 file (without extension)
-        output_dir = target_dir / mp3_path.stem
-
-        # Check if output directory already exists (implies it's already processed)
-        if output_dir.exists() and output_dir.is_dir():
-            print(f"Skipping '{mp3_path.name}': Output directory already exists.")
+        final_dir = target_dir / mp3_path.stem
+        if final_dir.exists() and final_dir.is_dir():
+            print(f"Skipping '{mp3_path.name}': Output directory exists.")
             continue
 
-        print(f"\nProcessing '{mp3_path.name}'...")
-        t1 = time.time()
+        print(f"\n>>> Transcribing '{mp3_path.name}'...")
+        prompt = "以下是正體中文的逐字稿。" if src_lang == "zh" else None
+        segments = transcribe_audio(model, mp3_path, src_lang, prompt)
+        
+        # 暫存結果以便後續翻譯
+        transcription_results.append({
+            "mp3_path": mp3_path,
+            "segments": segments,
+            "final_dir": final_dir
+        })
 
-        # Create the output directory
-        output_dir.mkdir(parents=True, exist_ok=True)
+    # 3. 辨識結束，立刻徹底釋放 Whisper 模型與 GPU 資源
+    print("\nTranscription batch finished. Releasing Whisper model...")
+    del model
+    if torch and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
 
-        # Transcribe audio using dual-platform logic
-        segments = transcribe_audio(str(mp3_path), model_type)
+    # 4. 批次處理翻譯與存檔
+    for result in transcription_results:
+        mp3_path = result["mp3_path"]
+        segments = result["segments"]
+        final_dir = result["final_dir"]
+        
+        temp_dir = target_dir / f"workingspace_{uuid.uuid4().hex[:8]}"
+        temp_dir.mkdir(parents=True, exist_ok=True)
 
-        txt_path = output_dir / f"{mp3_path.stem}.txt"
-        srt_path = output_dir / f"{mp3_path.stem}.srt"
+        # 存儲原始語言
+        orig_base = temp_dir / f"{mp3_path.stem}_{src_lang}"
+        save_to_files(segments, orig_base)
 
-        with (
-            open(txt_path, "w", encoding="utf-8") as f_txt,
-            open(srt_path, "w", encoding="utf-8") as f_srt,
-        ):
-            for i, segment in enumerate(segments, start=1):
-                text = segment["text"]
+        # 翻譯
+        if tr_lang:
+            print(f"\n>>> Translating '{mp3_path.name}' to {tr_lang}...")
+            translated = translate_segments(segments, src_lang, tr_lang, service, config)
+            tr_base = temp_dir / f"{mp3_path.stem}_{tr_lang}"
+            save_translated_srt(translated, tr_base, tr_lang)
 
-                # Convert to Traditional Chinese if converter is available
-                if converter:
-                    text = converter.convert(text)
-
-                # Write to .txt (pure text)
-                f_txt.write(text + "\n")
-
-                # Write to .srt (subtitle format)
-                start_time = format_timestamp(segment["start"])
-                end_time = format_timestamp(segment["end"])
-                f_srt.write(f"{i}\n")
-                f_srt.write(f"{start_time} --> {end_time}\n")
-                f_srt.write(f"{text}\n\n")
-
-                # Print progress to console
-                print(f"[{start_time} -> {end_time}] {text}")
-
-        t2 = time.time()
-        print(f"Finished '{mp3_path.name}' in {t2 - t1:.2f} seconds.")
-        # break
+        # 移動到最終目錄
+        if final_dir.exists(): # 再次檢查防止競爭
+            import shutil
+            shutil.rmtree(temp_dir)
+        else:
+            temp_dir.rename(final_dir)
+            print(f"Completed: {mp3_path.name}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Use faster-whisper and mlx-whisper to transcribe MP3 files."
-    )
-    parser.add_argument(
-        "target_dir",
-        type=str,
-        nargs="?",
-        default="",
-        help="Target directory containing mp3 files",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="large-v3",
-        help="whisper model type (default: large-v3)",
-    )
+    parser = argparse.ArgumentParser(description="Batch transcribe and translate media files.")
+    parser.add_argument("target_dir", type=str, help="Target directory")
+    parser.add_argument("-m", "--model", type=str, default="large-v3", help="Whisper model type")
+    parser.add_argument("-s", "--src_lang", type=str, default="ja", help="Source language")
+    parser.add_argument("-t", "--tr_lang", type=str, default=None, help="Target language")
+    parser.add_argument("-v", "--service", type=str, default=None, help="Translation service")
     parser.add_argument(
         "--limit",
         type=int,
         default=0,
         help="Limit the number of files to process (0 = no limit)",
     )
+    
     args = parser.parse_args()
-
-    # args.target_dir = "Gooaye"
-    main(args.target_dir, args.model, args.limit)
+    main(args.target_dir, args.model, args.src_lang, args.tr_lang, args.service, args.limit)

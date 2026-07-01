@@ -19,6 +19,11 @@ dependencies = [
     "torchaudio",
     "torchvision",
     "tqdm",
+    "pyyaml",
+    "openai",
+    "stable-ts>=2.19.1",
+    "anthropic>=0.97.0",
+    "google-genai>=1.73.1",
 ]
 [[tool.uv.index]]
 name = "pytorch-cu121"
