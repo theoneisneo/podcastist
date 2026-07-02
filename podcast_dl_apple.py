@@ -8,6 +8,16 @@ import requests
 
 
 def main(podcast_id: str, limit: int):
+    # 如果使用者輸入的是完整網址，嘗試解析出 ID
+    if "id" in podcast_id:
+        match = re.search(r"/id(\d+)", podcast_id)
+        if match:
+            podcast_id = match.group(1)
+        else:
+            match = re.search(r"id=(\d+)", podcast_id)
+            if match:
+                podcast_id = match.group(1)
+
     lookup_url = f"https://itunes.apple.com/lookup?id={podcast_id}&entity=podcast"
 
     # 1. 取得 Apple 針對此 Podcast 的資料
@@ -15,7 +25,11 @@ def main(podcast_id: str, limit: int):
     response = requests.get(lookup_url)
     data = response.json()
 
-    if data["resultCount"] == 0:
+    if "errorMessage" in data:
+        print(f"查詢失敗：{data['errorMessage']}")
+        return
+
+    if data.get("resultCount", 0) == 0:
         print("找不到該 Podcast，請確認 ID 是否正確。")
         return
 

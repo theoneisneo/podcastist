@@ -146,8 +146,9 @@ def save_translated_srt(segments: List[Dict], output_path: Path, tr_lang: str):
         except ImportError:
             pass
 
-    txt_path = output_path.with_suffix(".txt")
-    with open(output_path, "w", encoding="utf-8") as f_srt, open(txt_path, "w", encoding="utf-8") as f_txt:
+    txt_path = output_path.parent / (output_path.name + ".txt")
+    srt_path = output_path.parent / (output_path.name + ".srt")
+    with open(srt_path, "w", encoding="utf-8") as f_srt, open(txt_path, "w", encoding="utf-8") as f_txt:
         for s in segments:
             text = s["text"]
             if converter:

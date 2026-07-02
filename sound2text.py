@@ -75,11 +75,22 @@ def transcribe_audio(model, mp3_path: Path, language: str, initial_prompt: Optio
         segments = result.segments
 
     unified_segments = []
+    converter = None
+    if language == "zh":
+        try:
+            import opencc
+            converter = opencc.OpenCC("s2twp")
+        except ImportError:
+            pass
+
     for s in segments:
         start = float(s.get('start', 0) if isinstance(s, dict) else s.start)
         end = float(s.get('end', 0) if isinstance(s, dict) else s.end)
         text = s.get('text', "").strip() if isinstance(s, dict) else s.text.strip()
         
+        if converter:
+            text = converter.convert(text)
+            
         timestamp = f"[{format_timestamp(start)} -> {format_timestamp(end)}]"
         print(f"{timestamp} {text}")
         unified_segments.append({"start": start, "end": end, "text": text})
@@ -88,8 +99,8 @@ def transcribe_audio(model, mp3_path: Path, language: str, initial_prompt: Optio
 
 
 def save_to_files(segments: List[Dict], output_path_base: Path, converter=None):
-    txt_path = output_path_base.with_suffix(".txt")
-    srt_path = output_path_base.with_suffix(".srt")
+    txt_path = output_path_base.parent / (output_path_base.name + ".txt")
+    srt_path = output_path_base.parent / (output_path_base.name + ".srt")
 
     with (
         open(txt_path, "w", encoding="utf-8") as f_txt,
@@ -135,13 +146,30 @@ def main(target_dir_str: str, model_type: str, src_lang: str, tr_lang: str, serv
     # 2. 批次辨識
     for mp3_path in mp3_files:
         final_dir = target_dir / mp3_path.stem
+        
+        # 檢查是否已經完全處理完畢 (包含翻譯，如果有設定的話)
+        is_completed = False
         if final_dir.exists() and final_dir.is_dir():
-            print(f"Skipping '{mp3_path.name}': Output directory exists.")
+            orig_srt = final_dir / f"{mp3_path.stem}_{src_lang}.srt"
+            if tr_lang:
+                tr_srt = final_dir / f"{mp3_path.stem}_{tr_lang}.srt"
+                is_completed = orig_srt.exists() and tr_srt.exists()
+            else:
+                is_completed = orig_srt.exists()
+
+        if is_completed:
+            print(f"Skipping '{mp3_path.name}': Output files already exist.")
             continue
 
         print(f"\n>>> Transcribing '{mp3_path.name}'...")
         prompt = "以下是正體中文的逐字稿。" if src_lang == "zh" else None
         segments = transcribe_audio(model, mp3_path, src_lang, prompt)
+        
+        # 立即建立資料夾並存儲原始語言檔案
+        final_dir.mkdir(parents=True, exist_ok=True)
+        orig_base = final_dir / f"{mp3_path.stem}_{src_lang}"
+        save_to_files(segments, orig_base)
+        print(f"Saved transcript for '{mp3_path.name}'")
         
         # 暫存結果以便後續翻譯
         transcription_results.append({
@@ -157,32 +185,20 @@ def main(target_dir_str: str, model_type: str, src_lang: str, tr_lang: str, serv
         torch.cuda.empty_cache()
     gc.collect()
 
-    # 4. 批次處理翻譯與存檔
+    # 4. 批次處理翻譯
     for result in transcription_results:
         mp3_path = result["mp3_path"]
         segments = result["segments"]
         final_dir = result["final_dir"]
         
-        temp_dir = target_dir / f"workingspace_{uuid.uuid4().hex[:8]}"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-
-        # 存儲原始語言
-        orig_base = temp_dir / f"{mp3_path.stem}_{src_lang}"
-        save_to_files(segments, orig_base)
-
         # 翻譯
         if tr_lang:
             print(f"\n>>> Translating '{mp3_path.name}' to {tr_lang}...")
+            tr_base = final_dir / f"{mp3_path.stem}_{tr_lang}"
             translated = translate_segments(segments, src_lang, tr_lang, service, config)
-            tr_base = temp_dir / f"{mp3_path.stem}_{tr_lang}"
             save_translated_srt(translated, tr_base, tr_lang)
-
-        # 移動到最終目錄
-        if final_dir.exists(): # 再次檢查防止競爭
-            import shutil
-            shutil.rmtree(temp_dir)
+            print(f"Completed translation for: {mp3_path.name}")
         else:
-            temp_dir.rename(final_dir)
             print(f"Completed: {mp3_path.name}")
 
 
@@ -190,7 +206,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Batch transcribe and translate media files.")
     parser.add_argument("target_dir", type=str, help="Target directory")
     parser.add_argument("-m", "--model", type=str, default="large-v3", help="Whisper model type")
-    parser.add_argument("-s", "--src_lang", type=str, default="ja", help="Source language")
+    parser.add_argument("-s", "--src_lang", type=str, default="zh", help="Source language")
     parser.add_argument("-t", "--tr_lang", type=str, default=None, help="Target language")
     parser.add_argument("-v", "--service", type=str, default=None, help="Translation service")
     parser.add_argument(
