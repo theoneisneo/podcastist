@@ -25,3 +25,7 @@ wheels/
 .cursor/
 
 # Specific Ignore for Known Podcast Folders (Optional safety net)
+
+# macOS metadata files
+._*
+.DS_Store

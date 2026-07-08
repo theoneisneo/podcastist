@@ -8,6 +8,10 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Optional
 
+if sys.version_info >= (3, 7):
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
 # 第三方庫統一放在最上方
 try:
     import torch
@@ -137,30 +141,44 @@ def main(target_dir_str: str, model_type: str, src_lang: str, tr_lang: str, serv
         print("No media files found.")
         return
 
-    # 1. 載入一次 Whisper 模型
-    model = load_whisper_model(model_type)
-    
-    # 用於存儲待翻譯的任務
-    transcription_results = []
-
-    # 2. 批次辨識
+    # 1. 篩選出尚未處理的檔案
+    pending_files = []
     for mp3_path in mp3_files:
         final_dir = target_dir / mp3_path.stem
         
         # 檢查是否已經完全處理完畢 (包含翻譯，如果有設定的話)
         is_completed = False
         if final_dir.exists() and final_dir.is_dir():
-            orig_srt = final_dir / f"{mp3_path.stem}_{src_lang}.srt"
+            # 支援檢查帶語言後綴 (例如 _zh.srt) 或無語言後綴 (例如 .srt) 的原始檔
+            orig_srt_with_lang = final_dir / f"{mp3_path.stem}_{src_lang}.srt"
+            orig_srt_no_lang = final_dir / f"{mp3_path.stem}.srt"
+            orig_exists = orig_srt_with_lang.exists() or orig_srt_no_lang.exists()
+            
             if tr_lang:
                 tr_srt = final_dir / f"{mp3_path.stem}_{tr_lang}.srt"
-                is_completed = orig_srt.exists() and tr_srt.exists()
+                is_completed = orig_exists and tr_srt.exists()
             else:
-                is_completed = orig_srt.exists()
+                is_completed = orig_exists
 
         if is_completed:
             print(f"Skipping '{mp3_path.name}': Output files already exist.")
             continue
+        
+        pending_files.append(mp3_path)
 
+    if not pending_files:
+        print("All files already processed.")
+        return
+
+    # 2. 載入一次 Whisper 模型
+    model = load_whisper_model(model_type)
+    
+    # 用於存儲待翻譯的任務
+    transcription_results = []
+
+    # 3. 批次辨識
+    for mp3_path in pending_files:
+        final_dir = target_dir / mp3_path.stem
         print(f"\n>>> Transcribing '{mp3_path.name}'...")
         prompt = "以下是正體中文的逐字稿。" if src_lang == "zh" else None
         segments = transcribe_audio(model, mp3_path, src_lang, prompt)
