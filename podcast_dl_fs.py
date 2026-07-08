@@ -35,8 +35,9 @@ def main(channel_id: str, limit: int):
 
     # Create directory for the podcast
     folder_name = re.sub(r'[\\/:*?"<>|]', "_", podcast_name).strip()
-    if not os.path.exists(folder_name):
-        os.makedirs(folder_name)
+    folder_path = os.path.join("mp3", folder_name)
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
 
     # In RSS, episodes are inside <channel><item> usually, or just <item>
     items = root.findall(".//item")
@@ -66,7 +67,7 @@ def main(channel_id: str, limit: int):
 
         mp3_url = enclosure.get("url")
         filename = f"{clean_title}.mp3"
-        output_file = os.path.join(folder_name, filename)
+        output_file = os.path.join(folder_path, filename)
 
         print(f"[{count + 1}] Downloading: {title}")
         print(f"URL: {mp3_url}")

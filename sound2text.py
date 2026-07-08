@@ -144,7 +144,7 @@ def main(target_dir_str: str, model_type: str, src_lang: str, tr_lang: str, serv
     # 1. 篩選出尚未處理的檔案
     pending_files = []
     for mp3_path in mp3_files:
-        final_dir = target_dir / mp3_path.stem
+        final_dir = Path(__file__).parent.resolve() / "srt" / target_dir.name / mp3_path.stem
         
         # 檢查是否已經完全處理完畢 (包含翻譯，如果有設定的話)
         is_completed = False
@@ -178,7 +178,7 @@ def main(target_dir_str: str, model_type: str, src_lang: str, tr_lang: str, serv
 
     # 3. 批次辨識
     for mp3_path in pending_files:
-        final_dir = target_dir / mp3_path.stem
+        final_dir = Path(__file__).parent.resolve() / "srt" / target_dir.name / mp3_path.stem
         print(f"\n>>> Transcribing '{mp3_path.name}'...")
         prompt = "以下是正體中文的逐字稿。" if src_lang == "zh" else None
         segments = transcribe_audio(model, mp3_path, src_lang, prompt)

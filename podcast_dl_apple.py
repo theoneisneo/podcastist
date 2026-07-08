@@ -74,15 +74,16 @@ def main(podcast_id: str, limit: int):
     # 3. 準備下載資料夾
     # 過濾掉不可作為資料夾名稱的特殊字元
     folder_name = re.sub(r'[\\/:*?"<>|]', "_", podcast_name)
-    if not os.path.exists(folder_name):
-        os.makedirs(folder_name)
+    folder_path = os.path.join("mp3", folder_name)
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
 
     # 4. 開始逐一下載
     print(f"\n準備開始下載 (目前設定為最新 {limit} 集)...")
     for i, ep in enumerate(episodes[:limit]):
         # 過濾掉不可作為檔名的特殊字元
         safe_title = re.sub(r'[\\/:*?"<>|]', "_", ep["title"]).strip()
-        filename = os.path.join(folder_name, f"{safe_title}.mp3")
+        filename = os.path.join(folder_path, f"{safe_title}.mp3")
 
         print(f"[{i + 1}/{total_eps}] 正在下載: {safe_title}")
 
